@@ -151,12 +151,11 @@ void spawnHandler(USLOSS_Sysargs *args) {
     return;
   }
 
-  int pid;
-  int retval = Spawn(name, func, arg, stack_size, priority, &pid);
+  int pid = spork(name, func, arg, stack_size, priority);
 
   args->arg1 = (void *)(long)pid;
 
-  if (retval < 0) {
+  if (pid < 0) {
     args->arg5 = (void *)(long)-1;
   } else {
     args->arg5 = (void *)(long)0;
