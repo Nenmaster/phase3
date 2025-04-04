@@ -1,4 +1,8 @@
 run_testcases.student
 libphase1.a
 libphase2.a
-
+*.student_out
+test*
+*.out
+*.o
+*.DS_Store
