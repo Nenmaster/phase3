@@ -81,6 +81,7 @@ int kernSemCreate(int value, int *semaphore) {
   int slot = -1;
   for (int i = 0; i < MAXSEMS; i++) {
     if (!semArr[i].taken) {
+      semArr[i].taken = true;
       slot = i;
       break;
     }
@@ -104,7 +105,7 @@ int kernSemCreate(int value, int *semaphore) {
 }
 
 int kernSemP(int semaphore) {
-  if (semaphore < 0 || semaphore > MAXSEMS || !semArr[semaphore].taken) {
+  if (semaphore < 0 || semaphore >= MAXSEMS || !semArr[semaphore].taken) {
     return -1;
   }
 
@@ -123,7 +124,7 @@ int kernSemP(int semaphore) {
 }
 
 int kernSemV(int semaphore) {
-  if (semaphore < 0 || semaphore > MAXSEMS || !semArr[semaphore].taken) {
+  if (semaphore < 0 || semaphore >= MAXSEMS || !semArr[semaphore].taken) {
     return -1;
   }
 
@@ -159,8 +160,7 @@ void spawnHandler(USLOSS_Sysargs *args) {
   int slot = -1;
   for (int i = 0; i < MAXPROC; i++) {
     if (!shadowProcTable[i].taken) {
-      int pid = getpid();
-      slot = pid % MAXPROC;
+      slot = i;
       break;
     }
   }
@@ -202,11 +202,27 @@ void waitHandler(USLOSS_Sysargs *args) {
 }
 
 void terminateHandler(USLOSS_Sysargs *args) {
-
   int status = (int)(long)args->arg1;
   int pid, childStatus;
 
-  pid = join(&childStatus);
+  for (int i = 0; i < MAXSEMS; i++) {
+    if (semArr[i].taken) {
+      MboxRelease(semArr[i].mailBoxID);
+
+      semArr[i].taken = false;
+      semArr[i].count = 0;
+      semArr[i].mailBoxID = -1;
+    }
+  }
+
+  for (int i = 0; i < MAXPROC; i++) {
+    if (shadowProcTable[i].taken) {
+      shadowProcTable[i].taken = false;
+      shadowProcTable[i].userFunc = NULL;
+      shadowProcTable[i].userArg = NULL;
+    }
+  }
+
   while ((pid = join(&childStatus)) != -2) {
   }
 
@@ -215,11 +231,11 @@ void terminateHandler(USLOSS_Sysargs *args) {
 
 void semCreateHandler(USLOSS_Sysargs *args) {
   int val = (int)(long)args->arg1;
-  int semaphore;
+  int semaphore = 0;
 
   int result = kernSemCreate(val, &semaphore);
-
   args->arg1 = (void *)(long)semaphore;
+  args->arg4 = (void *)(long)result;
 }
 
 void semPHandler(USLOSS_Sysargs *args) {
@@ -235,9 +251,6 @@ void semPHandler(USLOSS_Sysargs *args) {
 }
 
 void semVHandler(USLOSS_Sysargs *args) {
-  if ((USLOSS_PsrGet() & USLOSS_PSR_CURRENT_MODE) != 0) {
-    USLOSS_Halt(1);
-  }
   int semaphore = (int)(long)args->arg1;
 
   int retVal = kernSemV(semaphore);
