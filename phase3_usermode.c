@@ -1,6 +1,7 @@
 
 #include <assert.h>
 #include <memory.h>
+#include <stdio.h>
 
 #include <usloss.h>
 #include <usyscall.h>
@@ -148,7 +149,6 @@ int SemFree(int semaphore) {
 
 void DumpProcesses(void) {
   require_user_mode(__func__);
-
   USLOSS_Sysargs args;
   memset(&args, 0, sizeof(args));
 

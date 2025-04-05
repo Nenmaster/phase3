@@ -26,11 +26,13 @@ proc shadowProcTable[MAXPROC];
 void phase3_start_service_processes() {};
 
 int trampolineFunc(void *arg) {
-  int pid = getpid();
-  int slot = pid % MAXPROC;
+  int slot = (int)(long)arg;
 
-  int userMode = USLOSS_PsrSet(USLOSS_PsrGet() & ~USLOSS_PSR_CURRENT_MODE);
-  if (userMode != USLOSS_DEV_OK) {
+  unsigned int psr = USLOSS_PsrGet();
+  psr = psr & ~USLOSS_PSR_CURRENT_MODE;
+  int result = USLOSS_PsrSet(psr);
+
+  if (result != USLOSS_DEV_OK) {
     USLOSS_Halt(1);
   }
 
@@ -39,7 +41,10 @@ int trampolineFunc(void *arg) {
 
   int retval = func(userArg);
 
-  Terminate(retval);
+  USLOSS_Sysargs sysArgs;
+  sysArgs.number = SYS_TERMINATE;
+  sysArgs.arg1 = (void *)(long)retval;
+  USLOSS_Syscall(&sysArgs);
 
   return 0;
 }
@@ -151,7 +156,27 @@ void spawnHandler(USLOSS_Sysargs *args) {
     return;
   }
 
-  int pid = spork(name, func, arg, stack_size, priority);
+  int slot = -1;
+  for (int i = 0; i < MAXPROC; i++) {
+    if (!shadowProcTable[i].taken) {
+      int pid = getpid();
+      slot = pid % MAXPROC;
+      break;
+    }
+  }
+
+  if (slot < 0) {
+    args->arg1 = (void *)-1;
+    args->arg4 = (void *)-1;
+    return;
+  }
+
+  shadowProcTable[slot].taken = true;
+  shadowProcTable[slot].userFunc = func;
+  shadowProcTable[slot].userArg = arg;
+
+  int pid =
+      spork(name, trampolineFunc, (void *)(long)slot, stack_size, priority);
 
   args->arg1 = (void *)(long)pid;
 
@@ -177,16 +202,14 @@ void waitHandler(USLOSS_Sysargs *args) {
 }
 
 void terminateHandler(USLOSS_Sysargs *args) {
+
   int status = (int)(long)args->arg1;
   int pid, childStatus;
 
   pid = join(&childStatus);
-  while (1) {
-    pid = join(&childStatus);
-    if (pid == -2) {
-      break;
-    }
+  while ((pid = join(&childStatus)) != -2) {
   }
+
   quit(status);
 }
 
@@ -197,12 +220,6 @@ void semCreateHandler(USLOSS_Sysargs *args) {
   int result = kernSemCreate(val, &semaphore);
 
   args->arg1 = (void *)(long)semaphore;
-
-  if (result < 0) {
-    args->arg4 = (void *)(long)-1;
-  } else {
-    args->arg4 = (void *)(long)0;
-  }
 }
 
 void semPHandler(USLOSS_Sysargs *args) {
@@ -218,6 +235,9 @@ void semPHandler(USLOSS_Sysargs *args) {
 }
 
 void semVHandler(USLOSS_Sysargs *args) {
+  if ((USLOSS_PsrGet() & USLOSS_PSR_CURRENT_MODE) != 0) {
+    USLOSS_Halt(1);
+  }
   int semaphore = (int)(long)args->arg1;
 
   int retVal = kernSemV(semaphore);
