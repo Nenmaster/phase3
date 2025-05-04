@@ -4,10 +4,22 @@
 #include "phase3_kernelInterfaces.h"
 #include "phase3_usermode.h"
 #include "usloss.h"
-#include "utils.h"
 
 #include <stdbool.h>
 #include <stdio.h>
+
+typedef struct {
+  int count;
+  int mailBoxID;
+  bool taken;
+} semaphore;
+
+typedef struct {
+  int pid;
+  bool taken;
+  int (*userFunc)(void *arg);
+  void *userArg;
+} proc;
 
 // protyped
 void spawnHandler(USLOSS_Sysargs *args);
@@ -57,6 +69,7 @@ void phase3_init(void) {
   }
 
   for (int i = 0; i < MAXPROC; i++) {
+    shadowProcTable[i].pid = -1;
     shadowProcTable[i].taken = false;
     shadowProcTable[i].userFunc = NULL;
     shadowProcTable[i].userArg = NULL;
@@ -215,8 +228,9 @@ void terminateHandler(USLOSS_Sysargs *args) {
     }
   }
 
+  int currPid = getpid();
   for (int i = 0; i < MAXPROC; i++) {
-    if (shadowProcTable[i].taken) {
+    if (shadowProcTable[i].taken && shadowProcTable[i].pid == currPid) {
       shadowProcTable[i].taken = false;
       shadowProcTable[i].userFunc = NULL;
       shadowProcTable[i].userArg = NULL;
