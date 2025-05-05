@@ -1,10 +1,15 @@
+/*
+ * Programmers: Omar Mendivil & Ayman Mohamed
+ * Phase3
+ * Creates user processes and semaphores, and handles system calls for
+ * process control and synchronization
+ */
+
 #include "phase3.h"
 #include "phase1.h"
 #include "phase2.h"
 #include "phase3_kernelInterfaces.h"
-#include "phase3_usermode.h"
 #include "usloss.h"
-
 #include <stdbool.h>
 #include <stdio.h>
 
@@ -12,6 +17,7 @@ typedef struct {
   int count;
   int mailBoxID;
   bool taken;
+  int parentPid;
 } semaphore;
 
 typedef struct {
@@ -21,7 +27,7 @@ typedef struct {
   void *userArg;
 } proc;
 
-// protyped
+// protypes
 void spawnHandler(USLOSS_Sysargs *args);
 void waitHandler(USLOSS_Sysargs *args);
 void terminateHandler(USLOSS_Sysargs *args);
@@ -37,6 +43,7 @@ proc shadowProcTable[MAXPROC];
 
 void phase3_start_service_processes() {};
 
+// Runs user function in user mode and uses SYS_TERMINATE with the return value
 int trampolineFunc(void *arg) {
   int slot = (int)(long)arg;
 
@@ -61,6 +68,7 @@ int trampolineFunc(void *arg) {
   return 0;
 }
 
+// intializes semaphores, shadowProcTable, and system call handlers
 void phase3_init(void) {
   for (int i = 0; i < MAXSEMS; i++) {
     semArr[i].taken = false;
@@ -86,6 +94,7 @@ void phase3_init(void) {
   systemCallVec[SYS_DUMPPROCESSES] = dumpProcHandler;
 }
 
+// Creates a new semaphore with the given value
 int kernSemCreate(int value, int *semaphore) {
   if (value < 0) {
     return -1;
@@ -104,7 +113,7 @@ int kernSemCreate(int value, int *semaphore) {
     return -1;
   }
 
-  int mailBoxID = MboxCreate(1, 0);
+  int mailBoxID = MboxCreate(10, sizeof(char));
   if (mailBoxID < 0) {
     return -1;
   }
@@ -112,11 +121,14 @@ int kernSemCreate(int value, int *semaphore) {
   semArr[slot].count = value;
   semArr[slot].mailBoxID = mailBoxID;
   semArr[slot].taken = true;
+  semArr[slot].parentPid = getpid();
 
   *semaphore = slot;
   return 0;
 }
 
+// Decrements the semaphore count
+// if count is negative it blocks by recieving a mailbox
 int kernSemP(int semaphore) {
   if (semaphore < 0 || semaphore >= MAXSEMS || !semArr[semaphore].taken) {
     return -1;
@@ -125,9 +137,9 @@ int kernSemP(int semaphore) {
   semArr[semaphore].count--;
 
   if (semArr[semaphore].count < 0) {
-    char placeHolder = 'x';
-    int result = MboxRecv(semArr[semaphore].mailBoxID, &placeHolder,
-                          sizeof(placeHolder));
+    char flagByte = 'x';
+    int result =
+        MboxRecv(semArr[semaphore].mailBoxID, &flagByte, sizeof(flagByte));
     if (result < 0) {
       return -1;
     }
@@ -136,17 +148,18 @@ int kernSemP(int semaphore) {
   return 0;
 }
 
+// Increments the semaphore count
+// A process is waiting if the count is 0 or less and unblocks the process
 int kernSemV(int semaphore) {
   if (semaphore < 0 || semaphore >= MAXSEMS || !semArr[semaphore].taken) {
     return -1;
   }
 
   semArr[semaphore].count++;
-
   if (semArr[semaphore].count <= 0) {
-    char placeHolder = 'x';
-    int result = MboxSend(semArr[semaphore].mailBoxID, &placeHolder,
-                          sizeof(placeHolder));
+    char flagByte = 'x';
+    int result =
+        MboxSend(semArr[semaphore].mailBoxID, &flagByte, sizeof(flagByte));
     if (result < 0) {
       return -1;
     }
@@ -155,12 +168,12 @@ int kernSemV(int semaphore) {
   return 0;
 }
 
-// Handlers
-
+// Handles SYS_SPAWN extracts necessary data and assigns a slot to the
+// shadowProcTable and sporks new user process
 void spawnHandler(USLOSS_Sysargs *args) {
   int (*func)(void *) = (int (*)(void *))args->arg1;
   void *arg = args->arg2;
-  int stack_size = (int)(long)args->arg3;
+  int stackSize = (int)(long)args->arg3;
   int priority = (int)(long)args->arg4;
   char *name = (char *)args->arg5;
 
@@ -189,8 +202,8 @@ void spawnHandler(USLOSS_Sysargs *args) {
   shadowProcTable[slot].userArg = arg;
 
   int pid =
-      spork(name, trampolineFunc, (void *)(long)slot, stack_size, priority);
-
+      spork(name, trampolineFunc, (void *)(long)slot, stackSize, priority);
+  shadowProcTable[slot].pid = pid;
   args->arg1 = (void *)(long)pid;
 
   if (pid < 0) {
@@ -200,6 +213,8 @@ void spawnHandler(USLOSS_Sysargs *args) {
   }
 }
 
+// Handles SYS_WAIT waits for a child to finish and stores its pid and exit
+// status
 void waitHandler(USLOSS_Sysargs *args) {
   int pid, status;
   pid = join(&status);
@@ -214,19 +229,11 @@ void waitHandler(USLOSS_Sysargs *args) {
   }
 }
 
+// Handles SYS_TERMINATE clears process entry from shadowProcTable and waits for
+// children
 void terminateHandler(USLOSS_Sysargs *args) {
   int status = (int)(long)args->arg1;
-  int pid, childStatus;
-
-  for (int i = 0; i < MAXSEMS; i++) {
-    if (semArr[i].taken) {
-      MboxRelease(semArr[i].mailBoxID);
-
-      semArr[i].taken = false;
-      semArr[i].count = 0;
-      semArr[i].mailBoxID = -1;
-    }
-  }
+  int childPid, childStatus;
 
   int currPid = getpid();
   for (int i = 0; i < MAXPROC; i++) {
@@ -237,12 +244,14 @@ void terminateHandler(USLOSS_Sysargs *args) {
     }
   }
 
-  while ((pid = join(&childStatus)) != -2) {
+  while ((childPid = join(&childStatus)) != -2) {
   }
 
   quit(status);
 }
 
+// Handles SYS_SEMCREATE extracts initial value, calls kernSemCreate, and
+// returns semaphore ID
 void semCreateHandler(USLOSS_Sysargs *args) {
   int val = (int)(long)args->arg1;
   int semaphore = 0;
@@ -252,6 +261,7 @@ void semCreateHandler(USLOSS_Sysargs *args) {
   args->arg4 = (void *)(long)result;
 }
 
+// Handles SYS_SEMP performs P operation using kernSemP and stores result code
 void semPHandler(USLOSS_Sysargs *args) {
   int semaphore = (int)(long)args->arg1;
 
@@ -264,6 +274,7 @@ void semPHandler(USLOSS_Sysargs *args) {
   }
 }
 
+// Handles SYS_SEMV performs V operation using kernSemV and stores result code
 void semVHandler(USLOSS_Sysargs *args) {
   int semaphore = (int)(long)args->arg1;
 
@@ -276,6 +287,7 @@ void semVHandler(USLOSS_Sysargs *args) {
   }
 }
 
+// Handles SYS_GETTIMEOFDAY stores current system time in microseconds
 void getTimeHandler(USLOSS_Sysargs *args) {
   int time = currentTime();
   args->arg1 = (void *)(long)time;
@@ -283,7 +295,7 @@ void getTimeHandler(USLOSS_Sysargs *args) {
 
 void getPidHandler(USLOSS_Sysargs *args) {
   int pid = getpid();
-  args->arg1 = (void *)(long)pid;
+  args->arg = (void *)(long)pid;
 }
 
 void dumpProcHandler(USLOSS_Sysargs *args) { dumpProcesses(); }
