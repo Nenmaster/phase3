@@ -295,7 +295,7 @@ void getTimeHandler(USLOSS_Sysargs *args) {
 
 void getPidHandler(USLOSS_Sysargs *args) {
   int pid = getpid();
-  args->arg = (void *)(long)pid;
+  args->arg1 = (void *)(long)pid;
 }
 
 void dumpProcHandler(USLOSS_Sysargs *args) { dumpProcesses(); }
